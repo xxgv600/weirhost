@@ -466,6 +466,7 @@ def handle_turnstile(sb, timeout=90):
     start_time = time.time()
     last_action = 0
     attempt_count = 0
+    empty_since = None
 
     print("[INFO] 开始检测 Cloudflare 质询状态...")
 
@@ -487,68 +488,79 @@ def handle_turnstile(sb, timeout=90):
             attempt_count += 1
             cur_title = sb.execute_script("return document.title || ''")
             print(f"[INFO] [尝试 #{attempt_count}] 页面标题: '{cur_title}' | 等待响应中...")
+            st = {}
             try:
                 st = sb.execute_script("return (function(){var sh=0;document.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)sh++});return {ifr: document.querySelectorAll('iframe').length, inp: !!document.querySelector('input[name=\"cf-turnstile-response\"]'), chl: (typeof window._cf_chl_opt !== 'undefined'), shdw: sh, html: document.body ? document.body.innerHTML.length : 0, txt: (document.body ? (document.body.innerText || '').slice(0, 60).replace(String.fromCharCode(10), ' ') : '')};})();")
                 print(f"[INFO] [CF状态] iframe={st.get('ifr')} 令牌input={st.get('inp')} chl_opt={st.get('chl')} shadow宿主={st.get('shdw')} bodyHTML长度={st.get('html')} 文本='{st.get('txt')}'")
             except Exception as e:
                 print(f"[WARN] CF状态读取失败: {e}")
 
-            # 方案 A: 寻找所有可见 iframe 并尝试聚焦 + 派发空格键 / 相对偏移点击
-            try:
-                try:
-                    sb.reconnect(0.5)
-                except Exception:
-                    pass
-                iframes = sb.driver.find_elements("css selector", "iframe")
-                cf_iframes = [
-                    f for f in iframes
-                    if any(k in (f.get_attribute("src") or "") for k in ("cloudflare", "turnstile", "challenges"))
-                ]
-                print(f"[INFO] 页面共检测到 {len(iframes)} 个 iframe (其中 CF 相关: {len(cf_iframes)})")
-
-                for idx, iframe in enumerate(cf_iframes):
+            # [patch v4] 控件未渲染(有令牌input、无iframe)时只等待不点击; 持续 40 秒判定本轮卡死
+            _absent = bool(st.get('inp')) and st.get('ifr') == 0
+            if _absent:
+                if empty_since is None:
+                    empty_since = now
+                elif now - empty_since >= 40:
+                    print("[WARN] 质询控件 40 秒未渲染，判定本轮卡死，提前结束本轮")
                     try:
-                        sb.execute_script("arguments[0].scrollIntoView({block: 'center'});", iframe)
-                        time.sleep(0.5)
+                        r = sb.execute_async_script("var cb=arguments[arguments.length-1];var done=false;fetch('https://challenges.cloudflare.com/turnstile/v0/api.js',{mode:'no-cors'}).then(function(){if(!done){done=true;cb('reachable')}}).catch(function(e){if(!done){done=true;cb('fail')}});setTimeout(function(){if(!done){done=true;cb('timeout')}},8000);")
+                        print(f"[INFO] [连通性] challenges.cloudflare.com/turnstile api.js: {r}")
+                    except Exception as e:
+                        print(f"[WARN] 连通性检查不可用: {e}")
+                    return False
+                print("[INFO] 控件尚未渲染，等待中（跳过点击）...")
+            else:
+                empty_since = None
 
-                        from selenium.webdriver.common.action_chains import ActionChains
-                        actions = ActionChains(sb.driver)
-                        actions.move_to_element_with_offset(iframe, 30, 32).click().perform()
-                        print(f"[INFO] 已向 CF iframe #{idx+1} 派发相对坐标点击")
-                        time.sleep(1)
-
-                        iframe.send_keys(" ")
-                        print(f"[INFO] 已向 CF iframe #{idx+1} 发送 SPACE 按键")
-                    except Exception as err:
-                        print(f"[WARN] 操作 iframe #{idx+1} 时异常: {err}")
-            except Exception as e:
-                print(f"[WARN] 遍历 iframe 异常: {e}")
-
-            # 方案 B: 视口中心绝对坐标点击（针对全屏居中的质询容器）
-            try:
-                viewport_info = sb.execute_script("""return (function(){
-                    return {
-                        w: window.innerWidth || document.documentElement.clientWidth,
-                        h: window.innerHeight || document.documentElement.clientHeight
-                    };
-                })();""")
-                vw = viewport_info.get("w", 1920)
-                vh = viewport_info.get("h", 1080)
-
-                from selenium.webdriver.common.action_chains import ActionChains
-                body = sb.driver.find_element("tag name", "body")
-                ActionChains(sb.driver).move_to_element_with_offset(body, int(vw * 0.42), int(vh * 0.42)).click().perform()
-                print(f"[INFO] 已向屏幕中心预估区域 ({int(vw * 0.42)}, {int(vh * 0.42)}) 派发盲点")
-            except Exception as err:
-                print(f"[WARN] 盲点异常: {err}")
-
-            if attempt_count == 6:
+            if not _absent:
+                # 方案 A: 寻找所有可见 iframe 并尝试聚焦 + 派发空格键 / 相对偏移点击
                 try:
-                    print("[INFO] [刷新] 第 6 次尝试后刷新页面，重走一遍质询...")
-                    sb.refresh()
-                    time.sleep(3)
+                    try:
+                        sb.reconnect(0.5)
+                    except Exception:
+                        pass
+                    iframes = sb.driver.find_elements("css selector", "iframe")
+                    cf_iframes = [
+                        f for f in iframes
+                        if any(k in (f.get_attribute("src") or "") for k in ("cloudflare", "turnstile", "challenges"))
+                    ]
+                    print(f"[INFO] 页面共检测到 {len(iframes)} 个 iframe (其中 CF 相关: {len(cf_iframes)})")
+
+                    for idx, iframe in enumerate(cf_iframes):
+                        try:
+                            sb.execute_script("arguments[0].scrollIntoView({block: 'center'});", iframe)
+                            time.sleep(0.5)
+
+                            from selenium.webdriver.common.action_chains import ActionChains
+                            actions = ActionChains(sb.driver)
+                            actions.move_to_element_with_offset(iframe, 30, 32).click().perform()
+                            print(f"[INFO] 已向 CF iframe #{idx+1} 派发相对坐标点击")
+                            time.sleep(1)
+
+                            iframe.send_keys(" ")
+                            print(f"[INFO] 已向 CF iframe #{idx+1} 发送 SPACE 按键")
+                        except Exception as err:
+                            print(f"[WARN] 操作 iframe #{idx+1} 时异常: {err}")
                 except Exception as e:
-                    print(f"[WARN] 刷新失败: {e}")
+                    print(f"[WARN] 遍历 iframe 异常: {e}")
+
+                # 方案 B: 视口中心绝对坐标点击（针对全屏居中的质询容器）
+                try:
+                    viewport_info = sb.execute_script("""return (function(){
+                        return {
+                            w: window.innerWidth || document.documentElement.clientWidth,
+                            h: window.innerHeight || document.documentElement.clientHeight
+                        };
+                    })();""")
+                    vw = viewport_info.get("w", 1920)
+                    vh = viewport_info.get("h", 1080)
+
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    body = sb.driver.find_element("tag name", "body")
+                    ActionChains(sb.driver).move_to_element_with_offset(body, int(vw * 0.42), int(vh * 0.42)).click().perform()
+                    print(f"[INFO] 已向屏幕中心预估区域 ({int(vw * 0.42)}, {int(vh * 0.42)}) 派发盲点")
+                except Exception as err:
+                    print(f"[WARN] 盲点异常: {err}")
 
             last_action = now
 
@@ -1005,7 +1017,19 @@ def process_single_account(sb, account, account_index):
     sb.open(f"https://{DOMAIN}/")
     time.sleep(3)
 
-    if not handle_turnstile(sb):
+    # [patch v4] 入口质询最多重抽 3 轮: CF 对同一入口的处置在轮次间摇摆, 抽到无质询放行即过
+    _cf_ok = False
+    for _draw in range(1, 4):
+        if _draw > 1:
+            print(f"[INFO] 第 {_draw} 轮重新进入站点...")
+            sb.open(f"https://{DOMAIN}/")
+            time.sleep(3)
+        if handle_turnstile(sb):
+            _cf_ok = True
+            break
+        print(f"[WARN] 第 {_draw} 轮质询未过")
+        time.sleep(5)
+    if not _cf_ok:
         print(f"[ERROR] Turnstile 验证失败")
         result["status"] = "error"
         result["message"] = "Cloudflare Turnstile 验证失败"
