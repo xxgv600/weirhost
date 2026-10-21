@@ -1013,7 +1013,26 @@ def process_single_account(sb, account, account_index):
     print(f"[INFO] CF 验证通过")
 
     print(f"[INFO] [步骤2] 注入 Cookie 并登录...")
-    sb.add_cookie({"name": cookie_name, "value": cookie_value, "domain": DOMAIN, "path": "/"})
+    # [patch v3] add_cookie 要求当前页就在目标域: 先核对落点, 不在本域先回首页(并重检质询), 注入失败再重试一次
+    try:
+        _cur = sb.get_current_url() or ""
+        _ttl = sb.execute_script("return document.title || ''")
+    except Exception:
+        _cur, _ttl = "", ""
+    print(f"[INFO] 注入前落点: {_cur} | 标题: '{_ttl}'")
+    if DOMAIN not in _cur:
+        print(f"[WARN] 当前页不在 {DOMAIN}，重新打开首页后再注入...")
+        sb.open(f"https://{DOMAIN}/")
+        time.sleep(3)
+        handle_turnstile(sb)
+    try:
+        sb.add_cookie({"name": cookie_name, "value": cookie_value, "domain": DOMAIN, "path": "/"})
+    except Exception as e:
+        print(f"[WARN] 首次注入 Cookie 失败: {e}；回首页重试一次...")
+        sb.open(f"https://{DOMAIN}/")
+        time.sleep(3)
+        handle_turnstile(sb)
+        sb.add_cookie({"name": cookie_name, "value": cookie_value, "domain": DOMAIN, "path": "/"})
     sb.open(f"https://{DOMAIN}/")
     time.sleep(3)
     if not is_logged_in(sb):
@@ -1214,7 +1233,14 @@ def add_server_time():
         with SB(**sb_kwargs) as sb:
             print("\n[INFO] 浏览器已启动")
             for i, account in enumerate(accounts):
-                result = process_single_account(sb, account, i)
+                # [patch v3] 单账号异常不再拖垮整个 run
+                try:
+                    result = process_single_account(sb, account, i)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    print(f"[ERROR] 账号处理异常: {e}")
+                    result = {"remark": account.get("remark", ""), "cookie_env": account.get("cookie_env", ""), "email": "Unknown", "status": "error", "message": str(e)[:100], "servers": [], "cookie_updated": False}
                 results.append(result)
                 send_account_notification(result)
                 if i < len(accounts) - 1:
