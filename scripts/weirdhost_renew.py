@@ -395,25 +395,26 @@ def get_xsrf_token_from_cookies(sb):
 #  Turnstile 处理（无 PyAutoGUI 依赖，精准 CDP + 坐标穿透）
 # ============================================================
 
+# [patch 2026-10-22] JS 载荷统一 IIFE 化(scripts/weirdhost_renew.py 原版多行脚本在本环境 execute_script 通道下报 Illegal return statement)、driver 使用前先 reconnect(UC 模式下原始 driver 通道会拒连)
 def ts_exists(sb):
     try:
-        return sb.execute_script("""
+        return sb.execute_script("""return (function(){
             return !!(
                 document.querySelector('input[name="cf-turnstile-response"]') ||
                 document.querySelector('.cf-turnstile') ||
                 document.querySelector('iframe[src*="challenges.cloudflare.com"]')
             );
-        """)
+        })();""")
     except Exception:
         return False
 
 
 def ts_solved(sb):
     try:
-        return sb.execute_script("""
+        return sb.execute_script("""return (function(){
             var i = document.querySelector('input[name="cf-turnstile-response"]');
             return !!(i && i.value && i.value.length > 20);
-        """)
+        })();""")
     except Exception:
         return False
 
@@ -489,6 +490,10 @@ def handle_turnstile(sb, timeout=90):
 
             # 方案 A: 寻找所有可见 iframe 并尝试聚焦 + 派发空格键 / 相对偏移点击
             try:
+                try:
+                    sb.reconnect(0.5)
+                except Exception:
+                    pass
                 iframes = sb.driver.find_elements("css selector", "iframe")
                 cf_iframes = [
                     f for f in iframes
@@ -516,12 +521,12 @@ def handle_turnstile(sb, timeout=90):
 
             # 方案 B: 视口中心绝对坐标点击（针对全屏居中的质询容器）
             try:
-                viewport_info = sb.execute_script("""
+                viewport_info = sb.execute_script("""return (function(){
                     return {
                         w: window.innerWidth || document.documentElement.clientWidth,
                         h: window.innerHeight || document.documentElement.clientHeight
                     };
-                """)
+                })();""")
                 vw = viewport_info.get("w", 1920)
                 vh = viewport_info.get("h", 1080)
 
@@ -557,10 +562,10 @@ def check_turnstile_exists_popup(sb):
 
 def check_turnstile_solved_popup(sb):
     try:
-        return sb.execute_script("""
+        return sb.execute_script("""return (function(){
             var i=document.querySelector('input[name="cf-turnstile-response"]');
             return !!(i && i.value && i.value.length > 20);
-        """)
+        })();""")
     except Exception:
         return False
 
@@ -592,6 +597,10 @@ EXPAND_POPUP_JS = """
 
 def click_turnstile_checkbox_js(sb):
     try:
+        try:
+            sb.reconnect(0.5)
+        except Exception:
+            pass
         iframes = sb.driver.find_elements("css selector", "iframe")
         for iframe in iframes:
             src = iframe.get_attribute("src") or ""
@@ -607,14 +616,14 @@ def click_turnstile_checkbox_js(sb):
                 except Exception:
                     pass
 
-        clicked = sb.execute_script("""
+        clicked = sb.execute_script("""return (function(){
             var sels=['input[type="checkbox"]','label.cb-lb','.cb-lb'];
             for(var i=0;i<sels.length;i++){
                 var el=document.querySelector(sels[i]);
                 if(el){ el.click(); el.dispatchEvent(new MouseEvent('click',{bubbles:true})); return true; }
             }
             return false;
-        """)
+        })();""")
         if clicked:
             return True
 
@@ -633,7 +642,7 @@ def click_turnstile_checkbox_js(sb):
 
 def check_result_popup(sb):
     try:
-        return sb.execute_script("""
+        return sb.execute_script("""return (function(){
             var btns=document.querySelectorAll('button');
             var hasNext=false;
             for(var i=0;i<btns.length;i++){ if(btns[i].innerText.includes('NEXT')||btns[i].innerText.includes('Next')){hasNext=true; break;}}
@@ -647,14 +656,14 @@ def check_result_popup(sb):
                 if(hasNext){ if(hasCooldown) return 'cooldown'; if(hasSuccessContent) return 'success';}
             }
             return null;
-        """)
+        })();""")
     except Exception:
         return None
 
 
 def check_popup_still_open(sb):
     try:
-        return sb.execute_script("""
+        return sb.execute_script("""return (function(){
             var t=document.querySelector('input[name="cf-turnstile-response"]');
             if(!t) return false;
             var btns=document.querySelectorAll('button');
@@ -666,7 +675,7 @@ def check_popup_still_open(sb):
                 }
             }
             return false;
-        """)
+        })();""")
     except Exception:
         return False
 
@@ -800,11 +809,11 @@ def check_renewal_button_enabled(sb):
     if not xpath:
         return (False, False, None, "页面上未找到续期按钮")
     try:
-        is_disabled = sb.execute_script(f"""
+        is_disabled = sb.execute_script(f"""return (function(){{
             var btn=document.evaluate("{xpath}", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
             if(!btn) return null;
             return btn.disabled || btn.getAttribute('aria-disabled')==='true' || btn.classList.contains('disabled');
-        """)
+        }})();""")
         if is_disabled is None:
             return (False, False, None, "按钮元素无法访问")
         if is_disabled:
