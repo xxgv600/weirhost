@@ -487,6 +487,11 @@ def handle_turnstile(sb, timeout=90):
             attempt_count += 1
             cur_title = sb.execute_script("return document.title || ''")
             print(f"[INFO] [尝试 #{attempt_count}] 页面标题: '{cur_title}' | 等待响应中...")
+            try:
+                st = sb.execute_script("return (function(){var sh=0;document.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)sh++});return {ifr: document.querySelectorAll('iframe').length, inp: !!document.querySelector('input[name=\"cf-turnstile-response\"]'), chl: (typeof window._cf_chl_opt !== 'undefined'), shdw: sh, html: document.body ? document.body.innerHTML.length : 0, txt: (document.body ? (document.body.innerText || '').slice(0, 60).replace(String.fromCharCode(10), ' ') : '')};})();")
+                print(f"[INFO] [CF状态] iframe={st.get('ifr')} 令牌input={st.get('inp')} chl_opt={st.get('chl')} shadow宿主={st.get('shdw')} bodyHTML长度={st.get('html')} 文本='{st.get('txt')}'")
+            except Exception as e:
+                print(f"[WARN] CF状态读取失败: {e}")
 
             # 方案 A: 寻找所有可见 iframe 并尝试聚焦 + 派发空格键 / 相对偏移点击
             try:
@@ -537,10 +542,23 @@ def handle_turnstile(sb, timeout=90):
             except Exception as err:
                 print(f"[WARN] 盲点异常: {err}")
 
+            if attempt_count == 6:
+                try:
+                    print("[INFO] [刷新] 第 6 次尝试后刷新页面，重走一遍质询...")
+                    sb.refresh()
+                    time.sleep(3)
+                except Exception as e:
+                    print(f"[WARN] 刷新失败: {e}")
+
             last_action = now
 
         time.sleep(2)
 
+    try:
+        dump = sb.execute_script("return (function(){return document.body ? document.body.innerHTML.slice(0, 2500) : '';})();")
+        print(f"[INFO] [超时DOM] {dump}")
+    except Exception as e:
+        print(f"[WARN] DOM 转储失败: {e}")
     print("[WARN] Turnstile 处理超时，保存现场截图 cf_stuck_debug.png")
     try:
         sb.save_screenshot("cf_stuck_debug.png")
