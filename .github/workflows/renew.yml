@@ -1,18 +1,14 @@
-# Ubuntu 版（由 yellowbins666/weirhost 的 macOS 版改）
-# 仅改三处与系统相关的部分：runs-on、Chrome/虚拟显示安装、sing-box 二进制（darwin→linux）、
-# 运行命令套 xvfb-run。定时、Secrets、脚本调用与其余步骤与原版完全一致。
-# 用法：在 fork 仓库里用本文件覆盖 .github/workflows/renew.yml。
 name: Weirdhost 自动续期
 
 on:
   schedule:
     # 每天北京时间 00:15 (UTC 16:15)
-    - cron: '15 16 * * *'
+    - cron: '15 2 * * *'  # UTC 02:15 = 北京时间 10:15（美国深夜，macOS runner 容量较松）
   workflow_dispatch:
 
 jobs:
   renew:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 25
     permissions:
       contents: write
@@ -27,16 +23,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装 Chrome 与虚拟显示 (Ubuntu)
+      - name: 安装 Chrome (macOS 真 GPU)
         run: |
-          if ! command -v google-chrome >/dev/null 2>&1; then
-            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq /tmp/chrome.deb
-          fi
-          sudo apt-get install -y -qq xvfb fonts-noto-cjk || true
-          google-chrome --version || true
-          which Xvfb || true
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install --cask google-chrome 2>/dev/null || true
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version || true
 
       - name: 安装 Python 依赖
         run: |
@@ -52,22 +43,22 @@ jobs:
           PROXY_NODE: ${{ secrets.PROXY_NODE }}
         run: |
           python scripts/vless_helper.py
-
+          
           if [ -f "/tmp/singbox.json" ]; then
             echo "[proxy] 检测到节点配置，开始准备 sing-box..."
             SINGBOX_VER="1.11.3"
             UNAME=$(uname -m)
-            if [ "$UNAME" = "aarch64" ] || [ "$UNAME" = "arm64" ]; then ARCH="arm64"; else ARCH="amd64"; fi
-
-            curl -fsSL -o /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-linux-${ARCH}.tar.gz"
+            if [ "$UNAME" = "arm64" ]; then ARCH="arm64"; else ARCH="amd64"; fi
+            
+            curl -fsSL -o /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-darwin-${ARCH}.tar.gz"
             tar -xzf /tmp/sing-box.tar.gz -C /tmp
             sudo mv /tmp/sing-box-*/sing-box /usr/local/bin/sing-box
             sudo chmod +x /usr/local/bin/sing-box
-
+            
             echo "[proxy] 启动 sing-box 后台进程..."
             nohup sing-box run -c /tmp/singbox.json > /tmp/singbox.log 2>&1 &
             sleep 3
-
+            
             PROXY_OK=no
             for i in 1 2 3; do
               if curl -x socks5h://127.0.0.1:10808 -sI https://www.cloudflare.com/cdn-cgi/trace --connect-timeout 6 -m 10 >/dev/null 2>&1; then
@@ -114,7 +105,7 @@ jobs:
           TROJAN_NODE: ${{ secrets.TROJAN_NODE }}
           PROXY_NODE: ${{ secrets.PROXY_NODE }}
         run: |
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/weirdhost_renew.py
+          python scripts/weirdhost_renew.py
 
       - name: 上传调试截图
         if: always()
